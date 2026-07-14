@@ -1,0 +1,7 @@
+{
+    "include": ["."],
+    "exclude": [".venv", "data", "outputs"],
+    "extraPaths": ["."],
+    "venvPath": ".",
+    "venv": ".venv"
+}
