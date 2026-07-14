@@ -1,0 +1,9 @@
+# SkillOpt text-space optimizer (ships the `skillopt` package plus the
+# `scripts` training entry points used by train.py / eval.py).
+skillopt
+
+azure-storage-blob
+python-dotenv
+openai
+httpx
+pytest
