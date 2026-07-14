@@ -1,0 +1,43 @@
+# SkillOpt config for the video2frames frame-description task.
+#
+# Azure endpoint/key/api-version come from .env (loaded by train.py/eval.py
+# before skillopt imports); only non-secret settings live here.
+# Unmapped env.* keys pass through to Video2FramesAdapter.__init__ kwargs.
+
+model:
+  optimizer: gpt-4.1
+  target: gpt-4.1
+  azure_openai_auth_mode: api_key
+
+train:
+  num_epochs: 4
+  batch_size: 8
+  accumulation: 1
+  seed: 42
+
+gradient:
+  minibatch_size: 4
+  merge_batch_size: 8
+  analyst_workers: 4
+  failure_only: false
+
+optimizer:
+  learning_rate: 3
+  lr_scheduler: cosine
+
+evaluation:
+  use_gate: true
+  gate_metric: soft
+  sel_env_num: 24
+  test_env_num: 30
+  eval_test: true
+
+env:
+  name: video2frames
+  skill_init: video2frames_env/skills/initial.md
+  split_dir: data/splits
+  workers: 4
+  exec_timeout: 180
+  max_completion_tokens: 2048
+  hard_threshold: 0.8
+  use_base64: false
