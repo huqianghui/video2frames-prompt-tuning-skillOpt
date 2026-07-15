@@ -65,11 +65,46 @@ Notes:
 
 The silent skillopt retry has one observable symptom worth knowing: a step
 that sits quietly for many minutes (e.g. a `reflect_s` of 1200 s with only
-~1 k completion tokens) is almost always the optimizer deployment being
-throttled (429) behind that silent loop — check the Azure portal metrics, not
-the process.
+~1 k completion tokens) is the optimizer call stuck behind that silent loop.
+With a generous optimizer quota (reflect sends only 3–4 concurrent text
+calls, far below any real TPM limit) the cause is usually **not** your own
+quota but one of:
+
+1. **regional capacity throttling** — standard (pay-go) deployments can get
+   429s even under quota when the region is busy, especially for the newest
+   models. Check "Throttled Requests" in the deployment's Azure metrics: 429s
+   at low utilization means capacity, and a Global Standard / Data Zone
+   deployment type or another region is the fix;
+2. **reasoning-model generation time** — reasoning tokens are generated but
+   not shown in the completion; a complex analyst minibatch can legitimately
+   run for minutes, and one timeout + retry doubles that.
+
+Either way: check the Azure portal metrics, not the process.
 
 ## 4. Sizing recommendations
+
+Each pipeline stage talks to a different deployment, so size each knob
+against the quota of the deployment it actually loads:
+
+| Stage | Deployment(s) it loads | Load profile |
+| --- | --- | --- |
+| rollout / gate eval / test eval (`env.workers`) | target (`model.target`) + judge (`env.judge_model`) | target: ~28 k prompt tokens per task (frames); judge: ~1–2 k text tokens per task |
+| reflect / merge (`analyst_workers`) | optimizer (`model.optimizer`) | 3–4 concurrent text calls, tens of k tokens each |
+| data prep probe (`--probe-workers`) | probe model (`--probe-model`) | full frame payload, `max_tokens=1` |
+
+### Worked example (quotas from a real deployment set)
+
+| Deployment | Quota (TPM / RPM) | Observed load | Verdict |
+| --- | --- | --- | --- |
+| gpt-4.1-mini (target) | 5 M / 5 k | gate eval ran 100 tasks × ~28 k tokens in 72.7 s ≈ **2.3 M TPM** | the bottleneck — headroom for ~2× more workers |
+| gpt-5.4-mini (judge) | 3 M / 3 k | ~0.3 M TPM during the same eval | ~10 % used, never the constraint |
+| gpt-5.4 (optimizer) | 2.5 M / 25 k | tens of k tokens per reflect | quota irrelevant; stalls come from capacity 429s or reasoning latency (§3) |
+
+Sizing from that: 100 tasks / 12 workers ≈ 9 waves × ~8 s ≈ 73 s per gate
+eval. Raising `env.workers` to 24 gives ≈ 5 waves ≈ 40 s at ~4.2 M TPM —
+still under the 5 M quota. Going further (e.g. 32) crosses the quota and
+converts the gain back into 429 retries. RPM is never the limit here
+(~85 requests/min against 5 k).
 
 1. **The real ceiling is Azure quota, not the OS or the pool size.** Each
    rollout sends every frame image (~28 k prompt tokens per task); raising

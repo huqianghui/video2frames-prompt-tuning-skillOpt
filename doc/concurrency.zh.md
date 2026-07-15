@@ -56,11 +56,44 @@
 | Blob 列举/下载 | Azure Storage SDK 内置策略 | 自动 |
 
 skillopt 的静默重试有一个值得记住的可观察症状：某个 step 安静地卡很多
-分钟（例如 `reflect_s` 达 1200 秒而 completion token 只有约 1k），几乎
-一定是优化器部署在那个静默循环背后被限流（429）——去查 Azure 门户的指
-标，而不是查进程。
+分钟（例如 `reflect_s` 达 1200 秒而 completion token 只有约 1k），就是
+优化器调用被困在那个静默循环里。如果优化器配额充足（reflect 只有 3–4
+个并发纯文本调用，远低于任何真实 TPM 上限），原因通常**不是**你自己的
+配额，而是以下二者之一：
+
+1. **区域容量限流** —— 标准（按量付费）部署在区域算力紧张时即使没用完
+   配额也会收到 429，对最新模型尤其常见。查部署的 Azure 指标里的
+   "Throttled Requests"：利用率很低却有 429 就是容量问题，换 Global
+   Standard / Data Zone 部署类型或换区域可解；
+2. **推理模型的生成耗时** —— reasoning token 会被生成但不显示在
+   completion 里；一个复杂的 analyst minibatch 本身就可能合理地跑几分
+   钟，叠加一次超时+重试就翻倍。
+
+无论哪种：去查 Azure 门户指标，而不是查进程。
 
 ## 4. 规模建议
+
+每个流水线阶段访问的是不同的部署，所以每个配置项要对着它实际加压的那个
+部署的配额来定：
+
+| 阶段 | 加压的部署 | 负载特征 |
+| --- | --- | --- |
+| rollout / gate eval / test eval（`env.workers`） | target（`model.target`）+ judge（`env.judge_model`） | target：每任务 ~2.8 万 prompt token（帧图片）；judge：每任务 ~1–2k 纯文本 token |
+| reflect / merge（`analyst_workers`） | optimizer（`model.optimizer`） | 3–4 个并发纯文本调用，每个几万 token |
+| 数据准备探测（`--probe-workers`） | 探测模型（`--probe-model`） | 完整帧负载，`max_tokens=1` |
+
+### 实例核算（来自一组真实部署的配额）
+
+| 部署 | 配额（TPM / RPM） | 实测负载 | 结论 |
+| --- | --- | --- | --- |
+| gpt-4.1-mini（target） | 5M / 5k | gate eval 在 72.7 秒内跑完 100 任务 × ~2.8 万 token ≈ **2.3M TPM** | 当前瓶颈——还有约一倍 worker 余量 |
+| gpt-5.4-mini（judge） | 3M / 3k | 同一次 eval 期间 ~0.3M TPM | 只用 ~10%，永远不是约束 |
+| gpt-5.4（optimizer） | 2.5M / 25k | 每次 reflect 几万 token | 配额无关紧要；卡顿来自容量 429 或推理耗时（见 §3） |
+
+据此定规模：100 任务 / 12 并发 ≈ 9 波 × ~8 秒 ≈ 每次 gate eval 73 秒。
+把 `env.workers` 提到 24 后约 5 波 ≈ 40 秒，吞吐 ~4.2M TPM——仍在 5M
+配额之内。再往上（例如 32）就会越过配额，把收益变回 429 重试。RPM 在
+这里从来不是瓶颈（~85 请求/分钟 vs 上限 5000）。
 
 1. **真正的上限是 Azure 配额，不是操作系统或线程池大小。**每个 rollout
    会发送全部帧图片（每任务约 2.8 万 prompt token）；把 `env.workers`
