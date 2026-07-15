@@ -42,6 +42,7 @@ precedes the frames.
 | `blob_utils.py` | `.env` loading and Azure Blob SAS URL construction. |
 | `doc/dataset-sizing.md` | How to size the splits relative to evaluation noise ([中文](doc/dataset-sizing.zh.md)). |
 | `doc/reward-design.md` | Scoring rationale and customer questions ([中文](doc/reward-design.zh.md)). |
+| `doc/reflection-trajectories.md` | The `conversation.json` contract reflection depends on, and the silent-skip incident it caused ([中文](doc/reflection-trajectories.zh.md)). |
 | `tests/` | Offline test suite — all network calls mocked. |
 
 `data/`, `original_data/`, `logs/`, `outputs/` are never committed (only
@@ -122,7 +123,12 @@ python eval.py --config configs/video2frames/default.yaml \
 ```
 
 Expect `outputs/smoke_epoch/history.json` with one record per step and a final
-test summary printed at the end.
+test summary printed at the end. Also verify the optimizer actually engaged:
+step logs must show `failure_patches > 0` and `summary.json` must have
+`total_accepts + total_rejects > 0` — if every step is `skip_no_patches`, the
+reflection stage received no trajectories (see
+`doc/reflection-trajectories.md`) and the run only re-evaluated the initial
+skill.
 
 ## Comparing against the old APO project
 
