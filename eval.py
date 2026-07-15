@@ -15,6 +15,9 @@ from train import bootstrap_env
 
 
 def main() -> None:
+    from run_logging import setup_run_logging
+
+    setup_run_logging("eval")
     bootstrap_env()
 
     import scripts.eval_only as skillopt_eval

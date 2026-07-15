@@ -33,6 +33,9 @@ def bootstrap_env() -> None:
 
 
 def main() -> None:
+    from run_logging import setup_run_logging
+
+    setup_run_logging("train")
     bootstrap_env()
 
     import scripts.train as skillopt_train
