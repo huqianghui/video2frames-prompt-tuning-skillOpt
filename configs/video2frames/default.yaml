@@ -8,7 +8,7 @@
 
 model:
   # optimizer: the analyst/reflection model that proposes skill edits.
-  optimizer: gpt-5.4-mini
+  optimizer: gpt-5.4
   # target: the tuned model that runs the rollouts. Fixed to the customer's
   # production deployment — changing it breaks comparability with recorded
   # baselines.
@@ -41,11 +41,11 @@ evaluation:
 env:
   name: video2frames
   # judge: the LLM that grades generated descriptions (evaluator.py).
-  judge_model: gpt-5.4
+  judge_model: gpt-5.4-mini
   skill_init: video2frames_env/skills/initial.md
   split_dir: data/splits
-  workers: 4
+  workers: 12
   exec_timeout: 180
-  max_completion_tokens: 2048
+  max_completion_tokens: 4096
   hard_threshold: 0.8
   use_base64: false
