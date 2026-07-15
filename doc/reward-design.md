@@ -51,7 +51,12 @@ from both optimizers are directly comparable.
    have almost nothing to critique. The judge's partial credit distinguishes
    "slightly off description" from "completely wrong", which is what the
    failure analysis feeds on. `soft` drives the gate (`evaluation.gate_metric:
-   soft`); `hard` is the shippable-quality headline number.
+   soft`); `hard` plays two roles: during reflection, rollouts with
+   `hard == 0` are the *failure* bucket the error analyst mines for patches
+   (`env.hard_threshold` therefore controls how aggressively tasks are
+   treated as failures), and after training it is the shippable-quality
+   headline number. Being binary, `hard` is deliberately not used for
+   gating — it cannot see incremental improvements that `soft` can.
 3. **Weights follow content share.** The three text fields are the bulk of the
    output (and the part a prompt can influence most), hence `0.6`; the two
    classification fields get `0.2` each.

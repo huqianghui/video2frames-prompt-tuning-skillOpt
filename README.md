@@ -23,6 +23,26 @@ precedes the frames.
 | selection gate | `val` split (`valid_seen`), metric `soft` |
 | held-out test | `test` split (`valid_unseen`) |
 
+### Reward: soft vs hard
+
+**`soft` is the old APO reward, formula unchanged** — full rationale, judge
+setup, and the zero rules are in [doc/reward-design.md](doc/reward-design.md)
+([中文](doc/reward-design.zh.md)). The two metrics play different roles:
+
+- **`soft`** (continuous 0–1) is the optimization target: it drives the
+  validation gate (`evaluation.gate_metric: soft`) and gives the analysts a
+  graded signal to critique.
+- **`hard`** (binary, `soft >= env.hard_threshold`) is required by SkillOpt
+  for two things: it routes each rollout into the *failure* bucket the error
+  analyst mines for patches (`hard == 0`) vs. the success bucket, and it is
+  the business headline number ("share of tasks at shippable quality").
+  It is deliberately **not** used for gating — a binary rate is too coarse to
+  detect incremental prompt improvements.
+
+So in an eval result like `{"hard": 0.5, "soft": 0.7784}`: average reward
+0.7784 (directly comparable to the old APO baseline), and 50% of tasks
+reached the 0.8 quality bar.
+
 ## Included Files
 
 | File | Role |
