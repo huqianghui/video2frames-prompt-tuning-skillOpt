@@ -102,3 +102,46 @@ def test_evaluate_invalid_json_scores_zero() -> None:
     assert result["hard"] == 0
     assert result["soft"] == 0.0
     assert result["fail_reason"].startswith("invalid_json")
+
+
+def make_rate_limit_error() -> Exception:
+    import httpx
+    from openai import RateLimitError
+
+    response = httpx.Response(429, request=httpx.Request("POST", "https://example.test/openai"))
+    return RateLimitError("rate limited", response=response, body=None)
+
+
+def flaky_judge(score: float, failures: int) -> tuple[AzureOpenAI, list[Any]]:
+    """Judge client that raises `failures` transient errors before succeeding."""
+    parsed = JudgeResponse(reason="fixed", score=score)
+    completion = SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(parsed=parsed))])
+    errors = [make_rate_limit_error() for _ in range(failures)]
+
+    def parse(**_: Any) -> Any:
+        if errors:
+            raise errors.pop(0)
+        return completion
+
+    client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(parse=parse)))
+    return cast(AzureOpenAI, client), errors
+
+
+def test_judge_retries_transient_errors(monkeypatch: pytest.MonkeyPatch) -> None:
+    import video2frames_env.evaluator as ev
+
+    sleeps: list[float] = []
+    monkeypatch.setattr(ev.time, "sleep", sleeps.append)
+    client, _ = flaky_judge(0.5, failures=2)
+    assert ev.judge_text_fields(client, generated(), SOLUTION) == 0.5
+    assert sleeps == [5, 10]
+
+
+def test_judge_raises_after_exhausted_retries(monkeypatch: pytest.MonkeyPatch) -> None:
+    import video2frames_env.evaluator as ev
+    from openai import RateLimitError
+
+    monkeypatch.setattr(ev.time, "sleep", lambda _: None)
+    client, _ = flaky_judge(0.5, failures=3)
+    with pytest.raises(RateLimitError):
+        ev.judge_text_fields(client, generated(), SOLUTION)

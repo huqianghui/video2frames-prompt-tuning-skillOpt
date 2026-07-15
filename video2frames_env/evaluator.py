@@ -15,9 +15,10 @@ from __future__ import annotations
 import json
 import logging
 import re
+import time
 from typing import Any, Dict, cast
 
-from openai import AzureOpenAI
+from openai import APIConnectionError, AzureOpenAI, InternalServerError, RateLimitError
 from pydantic import BaseModel, Field
 
 from video2frames_env.tasks import judge_model
@@ -69,12 +70,25 @@ def judge_text_fields(client: AzureOpenAI, generated: Dict[str, Any], expected: 
         f"- title: {expected['title']}\n\n"
         "Score the semantic match on a 0-1 scale. Be critical; partial credit is allowed."
     )
-    completion = client.chat.completions.parse(
-        model=judge_model(),
-        messages=[{"role": "user", "content": judge_prompt}],
-        response_format=JudgeResponse,
-        temperature=0.0,
-    )
+    # A transient judge failure would otherwise zero the task's score and
+    # distort gate decisions, so retry 429/5xx/network errors before giving up.
+    retries = 3
+    for attempt in range(1, retries + 1):
+        try:
+            completion = client.chat.completions.parse(
+                model=judge_model(),
+                messages=[{"role": "user", "content": judge_prompt}],
+                response_format=JudgeResponse,
+                temperature=0.0,
+            )
+            break
+        except (APIConnectionError, RateLimitError, InternalServerError) as e:
+            if attempt == retries:
+                raise
+            logger.warning("Judge call failed (attempt %d/%d): %s — retrying in %ds", attempt, retries, e, 5 * attempt)
+            time.sleep(5 * attempt)
+    else:  # unreachable: the last attempt either breaks or re-raises
+        raise RuntimeError("judge retry loop exhausted")
     parsed = completion.choices[0].message.parsed
     if parsed is None:
         logger.warning("Judge returned no parsed response; scoring 0.")
