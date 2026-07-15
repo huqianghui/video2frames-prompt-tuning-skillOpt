@@ -67,6 +67,7 @@ reached the 0.8 quality bar.
 | `doc/reflection-trajectories.md` | The `conversation.json` contract reflection depends on, and the silent-skip incident it caused ([中文](doc/reflection-trajectories.zh.md)). |
 | `doc/concurrency.md` | Concurrency model (threads, not processes), all knobs, retry layers, and sizing advice ([中文](doc/concurrency.zh.md)). |
 | `doc/env-architecture.md` | Why the env is split into these components, the agent-lightning mapping, and what a customer implements ([中文](doc/env-architecture.zh.md)). |
+| `doc/apo-faceoff.md` | APO vs SkillOpt face-off on the 100-task test split: method, full result tables, conclusions ([中文](doc/apo-faceoff.zh.md)). |
 | `tests/` | Offline test suite — all network calls mocked. |
 
 `data/`, `original_data/`, `logs/`, `outputs/` are never committed (only
