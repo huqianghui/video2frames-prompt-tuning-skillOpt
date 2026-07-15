@@ -28,6 +28,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import time
 from pathlib import Path
 from typing import Any, Dict, List, cast
 
@@ -77,26 +78,50 @@ def probe_task_cached(
     return blocked
 
 
-def probe_task(client: AzureOpenAI, task: FrameTask, config: Any, model: str) -> bool:
-    """Send the task's frames with a minimal prompt. Returns True when blocked."""
+def probe_task(client: AzureOpenAI, task: FrameTask, config: Any, model: str, retries: int = 3) -> bool:
+    """Send the task's frames with a minimal prompt. Returns True when blocked.
+
+    Azure fetches the image URLs server-side; that download can time out
+    transiently (400 "Timed out while downloading image"). Retry those, and
+    when the timeout persists treat the video as unusable (True) — a rollout
+    on it would hit the same timeouts.
+    """
     parts: List[ChatCompletionContentPartParam] = [{"type": "text", "text": "Reply with the single word: ok"}]
     for blob_path in task["frame_blobs"]:
         parts.append(
             {"type": "image_url", "image_url": {"url": blob_sas_url(config, blob_path), "detail": "low"}}
         )
-    try:
-        client.chat.completions.create(
-            model=model,
-            messages=[{"role": "user", "content": parts}],
-            max_tokens=1,
-            temperature=0.0,
-        )
-    except BadRequestError as e:
-        if e.code == "content_policy_violation" or "content" in str(e).lower():
-            logger.warning("Task %s (%s): BLOCKED (%s)", task["id"], task["family"], e.code)
-            return True
-        raise
-    return False
+    for attempt in range(1, retries + 1):
+        try:
+            client.chat.completions.create(
+                model=model,
+                messages=[{"role": "user", "content": parts}],
+                max_tokens=1,
+                temperature=0.0,
+            )
+        except BadRequestError as e:
+            msg = str(e).lower()
+            if e.code in ("content_policy_violation", "content_filter") or any(
+                marker in msg for marker in ("content_policy_violation", "content_filter", "content management policy")
+            ):
+                logger.warning("Task %s (%s): BLOCKED (%s)", task["id"], task["family"], e.code)
+                return True
+            if "timed out while downloading image" in str(e).lower():
+                if attempt < retries:
+                    logger.warning(
+                        "Task %s (%s): image download timed out (attempt %d/%d), retrying in %ds",
+                        task["id"], task["family"], attempt, retries, 5 * attempt,
+                    )
+                    time.sleep(5 * attempt)
+                    continue
+                logger.warning(
+                    "Task %s (%s): image download timed out %d times, excluding as unusable",
+                    task["id"], task["family"], retries,
+                )
+                return True
+            raise
+        return False
+    return True
 
 
 def main() -> None:
