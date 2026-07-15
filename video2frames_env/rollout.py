@@ -8,9 +8,12 @@ multimodal user message, calls the target deployment through
 scores the JSON output with [evaluate][video2frames_env.evaluator.evaluate].
 
 `run_batch` writes `results.jsonl` incrementally under `out_root` so an
-interrupted batch resumes without re-running finished tasks. Tasks known to be
-blocked by the Azure content filter (probe cache) are short-circuited to score
-0 with `fail_reason="content_filter"` instead of burning retries.
+interrupted batch resumes without re-running finished tasks. Every task also
+gets `predictions/<id>/{rollout,conversation}.json` — `conversation.json` is
+what SkillOpt's reflection stage reads to build analyst trajectories. Tasks
+known to be blocked by the Azure content filter (probe cache) are
+short-circuited to score 0 with `fail_reason="content_filter"` instead of
+burning retries.
 """
 
 from __future__ import annotations
@@ -86,6 +89,49 @@ def is_content_filter_error(error: BaseException) -> bool:
     return any(marker in text for marker in _CONTENT_FILTER_MARKERS)
 
 
+def _write_prediction(out_root: str, task: FrameTask, skill_content: str, result: Dict[str, Any]) -> None:
+    """Write per-task artifacts: `rollout.json` (scores) and `conversation.json`.
+
+    `conversation.json` is required by SkillOpt's reflection stage
+    (`fmt_minibatch_trajectories` skips any trajectory without it), so it must
+    exist for failures too — those are exactly what the error analyst needs.
+    """
+    pred_dir = os.path.join(out_root, "predictions", result["id"])
+    os.makedirs(pred_dir, exist_ok=True)
+
+    scores = {
+        key: result[key]
+        for key in ("scene_match", "courier_match", "judge_score", "soft", "hard", "fail_reason")
+    }
+    with open(os.path.join(pred_dir, "rollout.json"), "w", encoding="utf-8") as f:
+        json.dump(
+            {
+                "id": result["id"],
+                "skill_chars": len(skill_content),
+                "response": result["response"],
+                "solution": task["solution"],
+                "scores": scores,
+            },
+            f,
+            ensure_ascii=False,
+            indent=2,
+        )
+
+    verification = (
+        f"scene_match={result['scene_match']} courier_match={result['courier_match']} "
+        f"judge_score={result['judge_score']} soft={result['soft']:.4f} hard={result['hard']}"
+    )
+    if result["fail_reason"]:
+        verification += f"\nfail_reason: {result['fail_reason']}"
+    conversation = [
+        {"role": "user", "content": f"{result['task_description']} (frame images omitted from this trace)"},
+        {"role": "assistant", "content": result["response"] or "(no response)"},
+        {"role": "system", "content": verification},
+    ]
+    with open(os.path.join(pred_dir, "conversation.json"), "w", encoding="utf-8") as f:
+        json.dump(conversation, f, ensure_ascii=False, indent=2)
+
+
 def _base_result(task: FrameTask) -> Dict[str, Any]:
     return {
         "id": str(task["id"]),
@@ -128,57 +174,50 @@ def process_one(
         result["fail_reason"] = "content_filter"
         result["agent_ok"] = True
         logger.warning("Task %s: known content-filter block, scoring 0 without a request.", task_id)
-        return result
+    else:
+        try:
+            from skillopt.model import chat_target_messages
 
-    try:
-        from skillopt.model import chat_target_messages
+            if config is None:
+                config = blob_config_from_env()
+            if judge_client is None:
+                judge_client = AzureOpenAI()
 
-        if config is None:
-            config = blob_config_from_env()
-        if judge_client is None:
-            judge_client = AzureOpenAI()
-
-        messages = build_messages(skill_content, task, config, use_base64=use_base64)
-        logger.info("Task %s (%s): sending %d frames to the target model", task_id, task["family"], task["num_frames"])
-        response_text, _usage = chat_target_messages(
-            messages=messages,
-            max_completion_tokens=max_completion_tokens,
-            retries=3,
-            stage="rollout",
-            timeout=exec_timeout,
-        )
-        result["response"] = str(response_text or "")
-        result["agent_ok"] = True
-
-        scores = evaluate(judge_client, result["response"], task["solution"], hard_threshold=hard_threshold)
-        result.update(scores)
-
-        pred_dir = os.path.join(out_root, "predictions", task_id)
-        os.makedirs(pred_dir, exist_ok=True)
-        with open(os.path.join(pred_dir, "rollout.json"), "w", encoding="utf-8") as f:
-            json.dump(
-                {
-                    "id": task_id,
-                    "skill_chars": len(skill_content),
-                    "response": result["response"],
-                    "solution": task["solution"],
-                    "scores": scores,
-                },
-                f,
-                ensure_ascii=False,
-                indent=2,
+            messages = build_messages(skill_content, task, config, use_base64=use_base64)
+            logger.info(
+                "Task %s (%s): sending %d frames to the target model", task_id, task["family"], task["num_frames"]
             )
-    except RuntimeError as e:
-        if is_content_filter_error(e):
-            result["fail_reason"] = "content_filter"
+            response_text, _usage = chat_target_messages(
+                messages=messages,
+                max_completion_tokens=max_completion_tokens,
+                retries=3,
+                stage="rollout",
+                timeout=exec_timeout,
+            )
+            result["response"] = str(response_text or "")
             result["agent_ok"] = True
-            logger.warning("Task %s: rejected by the content filter, scoring 0.", task_id)
-        else:
-            result["fail_reason"] = f"error: {e}"
-            logger.error("Task %s: rollout failed: %s", task_id, e)
-    except Exception as e:  # noqa: BLE001 — one bad task must not kill the batch
-        result["fail_reason"] = f"error: {type(e).__name__}: {e}"
-        logger.error("Task %s: unexpected rollout error: %s", task_id, e)
+
+            scores = evaluate(judge_client, result["response"], task["solution"], hard_threshold=hard_threshold)
+            result.update(scores)
+        except RuntimeError as e:
+            if is_content_filter_error(e):
+                result["fail_reason"] = "content_filter"
+                result["agent_ok"] = True
+                logger.warning("Task %s: rejected by the content filter, scoring 0.", task_id)
+            else:
+                result["fail_reason"] = f"error: {e}"
+                logger.error("Task %s: rollout failed: %s", task_id, e)
+        except Exception as e:  # noqa: BLE001 — one bad task must not kill the batch
+            result["fail_reason"] = f"error: {type(e).__name__}: {e}"
+            logger.error("Task %s: unexpected rollout error: %s", task_id, e)
+
+    result["reference_text"] = "Expected ground-truth output:\n" + json.dumps(
+        task["solution"], ensure_ascii=False, indent=2
+    )
+    try:
+        _write_prediction(out_root, task, skill_content, result)
+    except OSError as e:
+        logger.error("Task %s: failed to write prediction artifacts: %s", task_id, e)
     return result
 
 

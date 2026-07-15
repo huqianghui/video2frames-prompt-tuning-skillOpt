@@ -127,6 +127,8 @@ def test_process_one_blocked_short_circuit(tmp_path: Path) -> None:
     assert result["soft"] == 0.0
     assert result["fail_reason"] == "content_filter"
     assert result["agent_ok"] is True
+    conversation = json.loads((tmp_path / "predictions" / "blocked-1" / "conversation.json").read_text("utf-8"))
+    assert "content_filter" in conversation[-1]["content"]
 
 
 def test_process_one_success(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -145,6 +147,10 @@ def test_process_one_success(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) ->
     assert result["scene_match"] == 1 and result["courier_match"] == 1
     assert captured["stage"] == "rollout"
     assert (tmp_path / "predictions" / "ok-1" / "rollout.json").exists()
+    assert result["reference_text"].startswith("Expected ground-truth output:")
+    conversation = json.loads((tmp_path / "predictions" / "ok-1" / "conversation.json").read_text("utf-8"))
+    assert [m["role"] for m in conversation] == ["user", "assistant", "system"]
+    assert conversation[1]["content"] == GOOD_OUTPUT
 
 
 def test_process_one_content_filter_runtime_error(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -168,6 +174,9 @@ def test_process_one_invalid_json(monkeypatch: pytest.MonkeyPatch, tmp_path: Pat
     )
     assert result["soft"] == 0.0 and result["hard"] == 0
     assert result["fail_reason"].startswith("invalid_json")
+    conversation = json.loads((tmp_path / "predictions" / "bad-1" / "conversation.json").read_text("utf-8"))
+    assert conversation[1]["content"] == "sorry, no JSON here"
+    assert "invalid_json" in conversation[-1]["content"]
 
 
 def test_run_batch_writes_and_resumes(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
