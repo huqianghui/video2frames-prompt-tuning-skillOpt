@@ -40,6 +40,15 @@ videos from sampling, so train/val can be regrown (e.g. `--train-size 80
 frozen-test run does not reproduce a previous round's train/val even with the
 same seed: the candidate pool changed, so the RNG draws differ.
 
+`--grow-test TARGET` is the opposite of `--freeze-test`: it keeps
+`data/{train,val}.jsonl` untouched and **appends** newly sampled tasks to
+`data/test.jsonl` until it holds TARGET tasks. New candidates are drawn from
+the source pool excluding every video already used by train/val/test plus any
+extra jsonl files passed via `--exclude` (e.g. another project's train/val),
+so the grown test split stays uncontaminated for every skill being compared.
+Existing test rows are preserved byte-for-byte, so earlier per-task results
+remain comparable.
+
 `--mirror-only` skips dataset generation entirely and only rebuilds
 `data/splits/` from the existing `data/{train,val,test}.jsonl` files — useful
 when the jsonl splits were copied from another machine or project.
@@ -304,6 +313,11 @@ def load_frozen_test_videos(path: Path) -> set[str]:
     """Video paths of an existing test split, for `--freeze-test` exclusion."""
     if not path.exists():
         raise FileNotFoundError(f"--freeze-test requires an existing test split at {path}; run once without it first.")
+    return jsonl_videos(path)
+
+
+def jsonl_videos(path: Path) -> set[str]:
+    """The set of video paths referenced by a jsonl split file."""
     videos: set[str] = set()
     with open(path, encoding="utf-8") as f:
         for line in f:
@@ -428,6 +442,77 @@ def mirror_splits(output_dir: Path, splits_dir: Optional[Path] = None) -> Path:
     return splits_dir
 
 
+def make_probe_callback(args: argparse.Namespace, config: BlobConfig) -> Optional[Callable[[Dict[str, Any]], bool]]:
+    """Build the content-filter probe callback when `--probe-content-filter` is set."""
+    if not args.probe_content_filter:
+        return None
+    from dotenv import load_dotenv
+    from openai import AzureOpenAI
+
+    from probe_content_filter import load_probe_cache, probe_task_cached
+    from video2frames_env.tasks import FrameTask
+
+    load_dotenv()
+    client = AzureOpenAI()
+    probe_cache = load_probe_cache()
+
+    def probe_candidate(task: Dict[str, Any]) -> bool:
+        logger.info("Probing task %s (%s, %d frames)", task["id"], task["family"], task["num_frames"])
+        return probe_task_cached(client, cast(FrameTask, task), config, probe_cache, args.probe_model)
+
+    return probe_candidate
+
+
+def grow_test(records: List[SourceRecord], args: argparse.Namespace, rng: random.Random) -> None:
+    """Append newly sampled tasks to `test.jsonl` until it holds `--grow-test` tasks.
+
+    Train/val (and the existing test rows) are never touched. Candidates are
+    drawn only from videos unused by any split and by any `--exclude` file, so
+    the grown test split stays uncontaminated.
+    """
+    test_path = args.output_dir / "test.jsonl"
+    if not test_path.exists():
+        raise FileNotFoundError(f"--grow-test requires an existing test split at {test_path}.")
+    existing = read_jsonl(test_path)
+    needed = args.grow_test - len(existing)
+    if needed <= 0:
+        logger.info("test.jsonl already holds %d >= %d tasks; nothing to grow.", len(existing), args.grow_test)
+        return
+
+    used: set[str] = set()
+    for name in SPLIT_NAMES:
+        split_path = args.output_dir / f"{name}.jsonl"
+        if split_path.exists():
+            used |= jsonl_videos(split_path)
+    for extra in args.exclude:
+        excluded = jsonl_videos(extra)
+        logger.info("Excluding %d videos from %s", len(excluded), extra)
+        used |= excluded
+
+    pool = [record for record in records if record["video"] not in used]
+    logger.info(
+        "Growing test split from %d to %d tasks; candidate pool %d (of %d source records).",
+        len(existing),
+        args.grow_test,
+        len(pool),
+        len(records),
+    )
+    oversampled = stratified_sample(pool, min(len(pool), needed * 2), rng)
+
+    config = blob_config_from_env()
+    new_tasks = resolve_frames(
+        oversampled, needed, config, is_blocked=make_probe_callback(args, config), workers=args.probe_workers
+    )
+    if len(new_tasks) < needed:
+        raise RuntimeError(f"Could not resolve enough new test tasks: got {len(new_tasks)}, need {needed}.")
+
+    write_jsonl(test_path, existing + new_tasks)
+    log_distribution_table("test (grown)", existing + new_tasks)
+    log_distribution_table("test (new rows only)", new_tasks)
+    splits_dir = mirror_splits(args.output_dir)
+    logger.info("Done. Grown test split mirrored into %s", splits_dir)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--source", type=Path, default=PROJECT_ROOT / "original_data" / "qwen_0318_swift_task.json")
@@ -451,6 +536,21 @@ def main() -> None:
         action="store_true",
         help="Keep the existing test.jsonl untouched and exclude its videos when regrowing train/val "
         "(--test-size is ignored; same-seed runs do not reproduce earlier train/val splits).",
+    )
+    parser.add_argument(
+        "--grow-test",
+        type=int,
+        default=None,
+        metavar="TARGET",
+        help="Grow the existing test.jsonl to TARGET tasks by appending newly sampled ones; "
+        "train/val and existing test rows stay untouched.",
+    )
+    parser.add_argument(
+        "--exclude",
+        type=Path,
+        nargs="*",
+        default=[],
+        help="Extra jsonl files whose videos are excluded from sampling (e.g. another project's train/val).",
     )
     parser.add_argument(
         "--val-courier-min",
@@ -495,6 +595,10 @@ def main() -> None:
         )
 
     rng = random.Random(args.seed)
+    if args.grow_test is not None:
+        grow_test(records, args, rng)
+        return
+
     split_sizes: Dict[str, int] = {"train": args.train_size, "val": args.val_size}
     if args.freeze_test:
         test_path = args.output_dir / "test.jsonl"
@@ -518,23 +622,7 @@ def main() -> None:
     oversampled = stratified_sample(records, min(len(records), total * 2), rng)
 
     config = blob_config_from_env()
-    is_blocked: Optional[Callable[[Dict[str, Any]], bool]] = None
-    if args.probe_content_filter:
-        from dotenv import load_dotenv
-        from openai import AzureOpenAI
-
-        from probe_content_filter import load_probe_cache, probe_task_cached
-        from video2frames_env.tasks import FrameTask
-
-        load_dotenv()
-        client = AzureOpenAI()
-        probe_cache = load_probe_cache()
-
-        def probe_candidate(task: Dict[str, Any]) -> bool:
-            logger.info("Probing task %s (%s, %d frames)", task["id"], task["family"], task["num_frames"])
-            return probe_task_cached(client, cast(FrameTask, task), config, probe_cache, args.probe_model)
-
-        is_blocked = probe_candidate
+    is_blocked = make_probe_callback(args, config)
 
     tasks = resolve_frames(oversampled, total, config, is_blocked=is_blocked, workers=args.probe_workers)
     if len(tasks) < total:

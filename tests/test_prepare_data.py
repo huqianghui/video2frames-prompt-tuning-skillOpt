@@ -260,6 +260,81 @@ def test_stratified_split_deterministic_and_size_checked() -> None:
         stratified_split(tasks, {"train": 8, "val": 4}, random.Random(7))
 
 
+def make_grow_args(tmp_path: Path, target: int, exclude: List[Path] | None = None) -> Any:
+    import argparse
+
+    return argparse.Namespace(
+        output_dir=tmp_path,
+        grow_test=target,
+        exclude=exclude or [],
+        probe_content_filter=False,
+        probe_model="gpt-4.1-mini",
+        probe_workers=1,
+    )
+
+
+def write_split(path: Path, rows: List[Dict[str, Any]]) -> None:
+    path.write_text("\n".join(json.dumps(row) for row in rows) + "\n", encoding="utf-8")
+
+
+def test_grow_test_appends_without_touching_other_splits(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = make_source_file(tmp_path, n_charades=30, n_virat=6, n_charades_courier=6)
+    records = load_pandas_column_json(source)
+    train, val, test = records[:4], records[4:8], records[8:10]
+    write_split(tmp_path / "train.jsonl", [dict(r) for r in train])
+    write_split(tmp_path / "val.jsonl", [dict(r) for r in val])
+    test_rows = [
+        {"id": r["id"], "video": r["video"], "family": r["family"], "frame_blobs": ["0.jpg"],
+         "num_frames": 1, "seconds_per_frame": 3, "solution": r["solution"]}
+        for r in test
+    ]
+    write_split(tmp_path / "test.jsonl", test_rows)
+    original_test_bytes = (tmp_path / "test.jsonl").read_text(encoding="utf-8")
+    extra = tmp_path / "old_train.jsonl"
+    write_split(extra, [dict(r) for r in records[10:12]])
+
+    monkeypatch.setattr(prepare_data, "blob_config_from_env", lambda: None)
+    monkeypatch.setattr(prepare_data, "list_frame_blobs", lambda config, video: [f"{video}/0.jpg"])
+
+    prepare_data.grow_test(records, make_grow_args(tmp_path, 6, exclude=[extra]), random.Random(42))
+
+    grown = [json.loads(l) for l in (tmp_path / "test.jsonl").read_text(encoding="utf-8").splitlines() if l]
+    assert len(grown) == 6
+    # Existing rows are preserved as a byte-identical prefix.
+    assert (tmp_path / "test.jsonl").read_text(encoding="utf-8").startswith(original_test_bytes)
+    # New rows exclude every used video (train/val/test + --exclude file).
+    used = {r["video"] for r in train + val + test + records[10:12]}
+    new_rows = grown[2:]
+    assert all(row["video"] not in used for row in new_rows)
+    # train/val untouched, mirror rebuilt.
+    assert [json.loads(l)["id"] for l in (tmp_path / "train.jsonl").read_text().splitlines() if l] == [
+        r["id"] for r in train
+    ]
+    mirrored = json.loads((tmp_path / "splits" / "test" / "items.json").read_text(encoding="utf-8"))
+    assert [row["id"] for row in mirrored] == [row["id"] for row in grown]
+
+
+def test_grow_test_noop_when_target_reached(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    source = make_source_file(tmp_path, n_charades=6, n_virat=2)
+    records = load_pandas_column_json(source)
+    write_split(tmp_path / "test.jsonl", [dict(r) for r in records[:3]])
+    before = (tmp_path / "test.jsonl").read_text(encoding="utf-8")
+
+    def boom() -> None:
+        raise AssertionError("should not touch blob storage on a no-op")
+
+    monkeypatch.setattr(prepare_data, "blob_config_from_env", boom)
+    prepare_data.grow_test(records, make_grow_args(tmp_path, 3), random.Random(0))
+    assert (tmp_path / "test.jsonl").read_text(encoding="utf-8") == before
+
+
+def test_grow_test_requires_existing_test(tmp_path: Path) -> None:
+    with pytest.raises(FileNotFoundError, match="grow-test"):
+        prepare_data.grow_test([], make_grow_args(tmp_path, 10), random.Random(0))
+
+
 def test_load_frozen_test_videos(tmp_path: Path) -> None:
     test_path = tmp_path / "test.jsonl"
     rows = make_tasks({("A", False): 2, ("B", True): 1})
