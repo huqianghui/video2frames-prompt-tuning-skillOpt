@@ -63,6 +63,7 @@ reached the 0.8 quality bar.
 | `doc/dataset-sizing.md` | How to size the splits relative to evaluation noise ([中文](doc/dataset-sizing.zh.md)). |
 | `doc/reward-design.md` | Scoring rationale and customer questions ([中文](doc/reward-design.zh.md)). |
 | `doc/reflection-trajectories.md` | The `conversation.json` contract reflection depends on, and the silent-skip incident it caused ([中文](doc/reflection-trajectories.zh.md)). |
+| `doc/concurrency.md` | Concurrency model (threads, not processes), all knobs, retry layers, and sizing advice ([中文](doc/concurrency.zh.md)). |
 | `tests/` | Offline test suite — all network calls mocked. |
 
 `data/`, `original_data/`, `logs/`, `outputs/` are never committed (only
