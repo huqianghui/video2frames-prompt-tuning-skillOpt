@@ -62,3 +62,21 @@ def test_reference_text_exposes_solution(adapter: Video2FramesAdapter) -> None:
 
 def test_task_types_are_families(adapter: Video2FramesAdapter) -> None:
     assert adapter.get_task_types() == ["Charades"]
+
+
+def test_judge_model_kwarg_sets_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import os
+
+    split_dir = write_splits(tmp_path, {"train": 2, "val": 1, "test": 1})
+    monkeypatch.setenv("JUDGE_MODEL", "stale-from-env")
+    Video2FramesAdapter(split_dir=str(split_dir), judge_model="gpt-5.4")
+    assert os.environ["JUDGE_MODEL"] == "gpt-5.4"
+
+
+def test_judge_model_default_leaves_env_untouched(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import os
+
+    split_dir = write_splits(tmp_path, {"train": 2, "val": 1, "test": 1})
+    monkeypatch.delenv("JUDGE_MODEL", raising=False)
+    Video2FramesAdapter(split_dir=str(split_dir))
+    assert "JUDGE_MODEL" not in os.environ

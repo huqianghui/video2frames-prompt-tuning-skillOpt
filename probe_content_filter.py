@@ -36,7 +36,7 @@ from openai import AzureOpenAI, BadRequestError
 from openai.types.chat import ChatCompletionContentPartParam
 
 from blob_utils import blob_config_from_env, blob_sas_url, load_env
-from video2frames_env.tasks import DATA_DIR, FrameTask, task_model
+from video2frames_env.tasks import DATA_DIR, FrameTask
 
 logger = logging.getLogger(__name__)
 
@@ -58,7 +58,9 @@ def save_probe_cache(cache: Dict[str, bool], path: Path = CACHE_PATH) -> None:
     path.write_text(json.dumps(cache, indent=2, sort_keys=True), encoding="utf-8")
 
 
-def probe_task_cached(client: AzureOpenAI, task: FrameTask, config: Any, cache: Dict[str, bool]) -> bool:
+def probe_task_cached(
+    client: AzureOpenAI, task: FrameTask, config: Any, cache: Dict[str, bool], model: str
+) -> bool:
     """`probe_task` with a persistent cache: each video is probed at most once across runs.
 
     The filter decision depends only on the input frames, so the result is stable
@@ -69,13 +71,13 @@ def probe_task_cached(client: AzureOpenAI, task: FrameTask, config: Any, cache: 
     if task_id in cache:
         logger.info("Task %s (%s): cache hit (blocked=%s)", task_id, task["family"], cache[task_id])
         return cache[task_id]
-    blocked = probe_task(client, task, config)
+    blocked = probe_task(client, task, config, model)
     cache[task_id] = blocked
     save_probe_cache(cache)
     return blocked
 
 
-def probe_task(client: AzureOpenAI, task: FrameTask, config: Any) -> bool:
+def probe_task(client: AzureOpenAI, task: FrameTask, config: Any, model: str) -> bool:
     """Send the task's frames with a minimal prompt. Returns True when blocked."""
     parts: List[ChatCompletionContentPartParam] = [{"type": "text", "text": "Reply with the single word: ok"}]
     for blob_path in task["frame_blobs"]:
@@ -84,7 +86,7 @@ def probe_task(client: AzureOpenAI, task: FrameTask, config: Any) -> bool:
         )
     try:
         client.chat.completions.create(
-            model=task_model(),
+            model=model,
             messages=[{"role": "user", "content": parts}],
             max_tokens=1,
             temperature=0.0,
@@ -103,6 +105,9 @@ def main() -> None:
     parser.add_argument("--apply", action="store_true", help="Rewrite the jsonl files without blocked tasks.")
     parser.add_argument("--from-report", action="store_true",
                         help="Skip probing; apply the blocked task list from an existing report.")
+    parser.add_argument("--model", default="gpt-4.1-mini",
+                        help="Azure OpenAI deployment used to probe (any vision-capable deployment; "
+                             "default matches model.target in configs/video2frames/default.yaml).")
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -117,7 +122,7 @@ def main() -> None:
     else:
         config = blob_config_from_env()
         client = AzureOpenAI()
-        report = {"model": task_model(), "splits": {}}
+        report = {"model": args.model, "splits": {}}
         cache = load_probe_cache()
 
     for split in args.splits:
@@ -131,7 +136,7 @@ def main() -> None:
             for i, task in enumerate(tasks, start=1):
                 logger.info("[%s %d/%d] probing task %s (%s, %d frames)",
                             split, i, len(tasks), task["id"], task["family"], task["num_frames"])
-                if probe_task_cached(client, task, config, cache):
+                if probe_task_cached(client, task, config, cache, args.model):
                     blocked.append({"id": task["id"], "family": task["family"], "video": task["video"]})
             report["splits"][split] = {
                 "total": len(tasks),

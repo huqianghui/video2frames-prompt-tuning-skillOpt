@@ -30,13 +30,12 @@ class FrameTask(TypedDict):
     solution: Dict[str, Any]
 
 
-def task_model() -> str:
-    """Azure OpenAI deployment analysed during rollouts (the tuned target)."""
-    return os.environ.get("AZURE_OPENAI_DEPLOYMENT", "gpt-4.1")
-
-
 def judge_model() -> str:
-    """Azure OpenAI deployment used to grade generated descriptions."""
+    """Azure OpenAI deployment used to grade generated descriptions.
+
+    Read from JUDGE_MODEL at call time; Video2FramesAdapter sets it from the
+    YAML `env.judge_model` key (the single source of truth for model choice).
+    """
     return os.environ.get("JUDGE_MODEL", "gpt-4.1-mini")
 
 

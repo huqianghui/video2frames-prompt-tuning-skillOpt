@@ -29,7 +29,8 @@ Two hard zero rules:
   (`fail_reason="content_filter"`; the rejection depends only on the input
   frames, identical for every candidate skill).
 
-The judge (`JUDGE_MODEL`, default `gpt-4.1-mini`, `temperature=0`, structured
+The judge (configured via `env.judge_model` in the YAML config,
+`temperature=0`, structured
 output with `reason` + `score`) is instructed to check whether the generated
 text "describes the same subjects and actions" as the ground truth, wording may
 differ, be critical, partial credit allowed. It returns **one combined 0–1

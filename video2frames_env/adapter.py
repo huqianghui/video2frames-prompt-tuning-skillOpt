@@ -10,6 +10,7 @@ against the expected description without leaking it into the rollout prompt.
 from __future__ import annotations
 
 import json
+import os
 from typing import Any, Dict, List
 
 from skillopt.datasets.base import BatchSpec
@@ -38,6 +39,7 @@ class Video2FramesAdapter(EnvAdapter):
         max_completion_tokens: int = 2048,
         hard_threshold: float = DEFAULT_HARD_THRESHOLD,
         use_base64: bool = False,
+        judge_model: str = "",
         analyst_workers: int = 4,
         failure_only: bool = False,
         minibatch_size: int = 4,
@@ -48,6 +50,10 @@ class Video2FramesAdapter(EnvAdapter):
         self.max_completion_tokens = int(max_completion_tokens)
         self.hard_threshold = float(hard_threshold)
         self.use_base64 = bool(use_base64)
+        if judge_model:
+            # Same pattern skillopt uses for target/optimizer deployments:
+            # evaluator.judge_model() reads JUDGE_MODEL at call time.
+            os.environ["JUDGE_MODEL"] = judge_model
         self.analyst_workers = analyst_workers
         self.failure_only = failure_only
         self.minibatch_size = minibatch_size

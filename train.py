@@ -18,16 +18,14 @@ from blob_utils import load_env
 
 
 def bootstrap_env() -> None:
-    """Load .env and set skillopt model env vars.
+    """Load .env (credentials only) before any `skillopt`/`scripts` import.
 
-    Must run before any `skillopt`/`scripts` import: skillopt.model reads
-    AZURE_OPENAI_* / *_DEPLOYMENT / AUTH_MODE at module import time.
+    skillopt.model reads AZURE_OPENAI_* / AUTH_MODE at module import time.
+    Model selection (target/optimizer/judge) lives exclusively in the YAML
+    config — see "Model configuration" in README.md.
     """
     load_env()
     os.environ.setdefault("AZURE_OPENAI_AUTH_MODE", "api_key")
-    deployment = os.environ.get("AZURE_OPENAI_DEPLOYMENT", "gpt-4.1")
-    os.environ.setdefault("TARGET_DEPLOYMENT", deployment)
-    os.environ.setdefault("OPTIMIZER_DEPLOYMENT", deployment)
 
     from install_prompts import ensure_prompts
 

@@ -56,10 +56,37 @@ pip install -r requirements.txt
 cp .env.example .env  # fill in real credentials
 ```
 
-`.env` must provide the Azure OpenAI endpoint/key/deployment and the Blob
+`.env` must provide the Azure OpenAI endpoint/key/api-version and the Blob
 connection settings (see `.env.example`). `train.py`/`eval.py` load it before
-any skillopt import and default the target/optimizer deployment to
-`AZURE_OPENAI_DEPLOYMENT`.
+any skillopt import. `.env` holds **only credentials and connection strings**
+— it never selects models.
+
+## Model configuration
+
+Three model roles exist, and all of them are configured in
+`configs/video2frames/default.yaml` (the single source of truth for model
+selection):
+
+| Role | What it does | YAML key |
+| --- | --- | --- |
+| target | The tuned model that runs the rollouts (receives the skill + frames). Fixed to the customer's production deployment `gpt-4.1-mini`. | `model.target` |
+| optimizer | SkillOpt's analyst/reflection model that reads trajectories and proposes skill edits. Use a strong recent model. | `model.optimizer` |
+| judge | The LLM that grades generated descriptions (`evaluator.py`). Use a strong recent model. | `env.judge_model` |
+
+How each value reaches the code: skillopt's trainer/eval apply
+`model.target`/`model.optimizer` from the YAML unconditionally
+(`set_target_deployment`/`set_optimizer_deployment`), and
+`Video2FramesAdapter` exports `env.judge_model` as the `JUDGE_MODEL` env var,
+which `evaluator.py` reads at call time. Override any of them from the CLI
+like any config key, e.g. `--cfg-options model.optimizer=gpt-5.6
+env.judge_model=gpt-5.6`.
+
+The standalone `probe_content_filter.py` does not go through the YAML config;
+it takes `--model` (default `gpt-4.1-mini`).
+
+Note: changing `model.target` away from the deployment used for recorded
+baselines breaks score comparability — judge and optimizer can be upgraded
+freely, the target should not be.
 
 ## Data preparation
 
