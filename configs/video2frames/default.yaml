@@ -44,7 +44,7 @@ env:
   judge_model: gpt-5.4-mini
   skill_init: video2frames_env/skills/initial.md
   split_dir: data/splits
-  workers: 12
+  workers: 18
   exec_timeout: 180
   max_completion_tokens: 4096
   hard_threshold: 0.8
