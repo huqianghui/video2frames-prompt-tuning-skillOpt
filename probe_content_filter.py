@@ -28,6 +28,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import threading
 import time
 from pathlib import Path
 from typing import Any, Dict, List, cast
@@ -43,6 +44,8 @@ logger = logging.getLogger(__name__)
 
 REPORT_PATH = DATA_DIR / "content_filter_probe.json"
 CACHE_PATH = DATA_DIR / "content_filter_cache.json"
+
+_cache_lock = threading.Lock()
 
 
 def load_probe_cache(path: Path = CACHE_PATH) -> Dict[str, bool]:
@@ -73,8 +76,10 @@ def probe_task_cached(
         logger.info("Task %s (%s): cache hit (blocked=%s)", task_id, task["family"], cache[task_id])
         return cache[task_id]
     blocked = probe_task(client, task, config, model)
-    cache[task_id] = blocked
-    save_probe_cache(cache)
+    # prepare_data probes from a thread pool; serialize the shared dict + file write.
+    with _cache_lock:
+        cache[task_id] = blocked
+        save_probe_cache(cache)
     return blocked
 
 

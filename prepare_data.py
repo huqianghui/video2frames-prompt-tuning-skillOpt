@@ -53,6 +53,7 @@ import logging
 import math
 import random
 from collections import Counter, defaultdict
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, TypedDict, TypeVar, cast
 
@@ -334,6 +335,7 @@ def resolve_frames(
     needed: int,
     config: BlobConfig,
     is_blocked: Optional[Callable[[Dict[str, Any]], bool]] = None,
+    workers: int = 1,
 ) -> List[Dict[str, Any]]:
     """Attach frame blob listings to records, skipping videos with no frames.
 
@@ -341,14 +343,17 @@ def resolve_frames(
     frames resolved (records without frames are skipped with a warning).
     When `is_blocked` is given, tasks it flags (e.g. rejected by the Azure
     content safety filter) are skipped as well, so the returned tasks all pass.
+
+    With `workers > 1`, records are resolved and probed in order-preserving
+    chunks, so the selected tasks are identical to a serial run (blocked-ness
+    is a property of the video, not of the probing order).
     """
-    tasks: List[Dict[str, Any]] = []
-    while records and len(tasks) < needed:
-        record = records.pop(0)
+
+    def resolve_one(record: SourceRecord) -> Optional[Dict[str, Any]]:
         frame_blobs = list_frame_blobs(config, record["video"])
         if not frame_blobs:
             logger.warning("Skipping record %s (%s): no frames in blob storage", record["id"], record["video"])
-            continue
+            return None
         task: Dict[str, Any] = {
             "id": record["id"],
             "video": record["video"],
@@ -362,10 +367,21 @@ def resolve_frames(
             logger.warning(
                 "Skipping record %s (%s): blocked by the content safety filter", record["id"], record["video"]
             )
-            continue
-        tasks.append(task)
-        if len(tasks) % 10 == 0:
-            logger.info("Resolved frames for %d/%d tasks", len(tasks), needed)
+            return None
+        return task
+
+    tasks: List[Dict[str, Any]] = []
+    chunk_size = max(1, workers)
+    with ThreadPoolExecutor(max_workers=chunk_size) as pool:
+        idx = 0
+        while idx < len(records) and len(tasks) < needed:
+            chunk = records[idx : idx + chunk_size]
+            idx += len(chunk)
+            for task in pool.map(resolve_one, chunk):
+                if task is not None and len(tasks) < needed:
+                    tasks.append(task)
+                    if len(tasks) % 10 == 0:
+                        logger.info("Resolved frames for %d/%d tasks", len(tasks), needed)
     if len(tasks) < needed:
         logger.warning("Only resolved %d of %d requested tasks (ran out of candidates)", len(tasks), needed)
     return tasks
@@ -422,6 +438,8 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--probe-model", default="gpt-4.1-mini",
                         help="Deployment used by --probe-content-filter (should match the target model).")
+    parser.add_argument("--probe-workers", type=int, default=8,
+                        help="Concurrent workers for frame resolution and content-filter probing.")
     parser.add_argument("--full", action="store_true", help="Also write full.jsonl with all records (no frame lists).")
     parser.add_argument(
         "--probe-content-filter",
@@ -518,7 +536,7 @@ def main() -> None:
 
         is_blocked = probe_candidate
 
-    tasks = resolve_frames(oversampled, total, config, is_blocked=is_blocked)
+    tasks = resolve_frames(oversampled, total, config, is_blocked=is_blocked, workers=args.probe_workers)
     if len(tasks) < total:
         raise RuntimeError(f"Could not resolve enough tasks with frames: got {len(tasks)}, need {total}.")
 
