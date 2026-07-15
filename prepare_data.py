@@ -420,6 +420,8 @@ def main() -> None:
     parser.add_argument("--val-size", type=int, default=24)
     parser.add_argument("--test-size", type=int, default=30)
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--probe-model", default="gpt-4.1-mini",
+                        help="Deployment used by --probe-content-filter (should match the target model).")
     parser.add_argument("--full", action="store_true", help="Also write full.jsonl with all records (no frame lists).")
     parser.add_argument(
         "--probe-content-filter",
@@ -512,7 +514,7 @@ def main() -> None:
 
         def probe_candidate(task: Dict[str, Any]) -> bool:
             logger.info("Probing task %s (%s, %d frames)", task["id"], task["family"], task["num_frames"])
-            return probe_task_cached(client, cast(FrameTask, task), config, probe_cache)
+            return probe_task_cached(client, cast(FrameTask, task), config, probe_cache, args.probe_model)
 
         is_blocked = probe_candidate
 
