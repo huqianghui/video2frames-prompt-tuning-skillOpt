@@ -4,14 +4,21 @@
 The `skillopt` 0.2.0 wheel omits the `skillopt/prompts/*.md` package data
 (no `[tool.setuptools.package-data]` upstream), so `load_prompt(...)` raises
 `FileNotFoundError: Prompt 'analyst_success' not found` during training.
-This script downloads the prompt files from the SkillOpt GitHub repo (pinned
-commit) into `site-packages/skillopt/prompts/`.
+
+Prompt sources, in priority order:
+
+1. `custom_prompt/<name>` — project-specific overrides (edit these to tailor
+   the optimizer's reflection behavior to the task);
+2. `skillopt_prompts/<name>` — the vendored upstream defaults (pinned commit);
+3. GitHub raw download — fallback only when a file is missing from both dirs.
+
+`train.py` calls [ensure_prompts][install_prompts.ensure_prompts] on every
+run: a prompt is (re)written into `site-packages/skillopt/prompts/` whenever
+it is missing or its content differs from the resolved source, so edits under
+`custom_prompt/` take effect on the next training run automatically.
 
 Usage:
     python install_prompts.py [--force]
-
-`train.py` calls [ensure_prompts][install_prompts.ensure_prompts]
-automatically, so a manual run is only needed to refresh with `--force`.
 """
 
 from __future__ import annotations
@@ -19,13 +26,16 @@ from __future__ import annotations
 import argparse
 import logging
 from pathlib import Path
-from typing import List
+from typing import List, Optional
 
 logger = logging.getLogger(__name__)
 
+REPO_ROOT = Path(__file__).resolve().parent
+CUSTOM_DIR = REPO_ROOT / "custom_prompt"
+VENDORED_DIR = REPO_ROOT / "skillopt_prompts"
+
 PROMPTS_REPO = "huqianghui/SkillOpt"
 PROMPTS_REF = "50fed2958b71ae24266a179ba8e791b4e00007bd"  # matches skillopt 0.2.0
-PROMPTS_API_URL = f"https://api.github.com/repos/{PROMPTS_REPO}/contents/skillopt/prompts?ref={PROMPTS_REF}"
 RAW_BASE_URL = f"https://raw.githubusercontent.com/{PROMPTS_REPO}/{PROMPTS_REF}/skillopt/prompts"
 
 # The generic reflection prompts referenced by skillopt.engine.trainer /
@@ -62,40 +72,62 @@ def prompts_dir() -> Path:
     return Path(skillopt.prompts.__file__).resolve().parent
 
 
-def missing_prompts(target: Path) -> List[str]:
-    return [name for name in PROMPT_NAMES if not (target / name).exists()]
+def resolve_local(name: str) -> Optional[Path]:
+    """Local source for a prompt: custom override first, then vendored default."""
+    for directory in (CUSTOM_DIR, VENDORED_DIR):
+        path = directory / name
+        if path.exists():
+            return path
+    return None
 
 
 def ensure_prompts(force: bool = False) -> int:
-    """Download prompt files that are missing (or all, with `force`).
+    """Sync prompt files into site-packages from local sources (GitHub as fallback).
 
-    Returns the number of files written.
+    A file is written when it is missing, its content differs from the resolved
+    source, or `force` is set. Returns the number of files written.
     """
-    import httpx
-
     target = prompts_dir()
-    names = PROMPT_NAMES if force else missing_prompts(target)
-    if not names:
-        logger.debug("SkillOpt prompts already present in %s", target)
-        return 0
-
-    logger.info("Installing %d SkillOpt prompt files into %s", len(names), target)
     written = 0
-    with httpx.Client(timeout=30.0, follow_redirects=True) as client:
-        for name in names:
-            url = f"{RAW_BASE_URL}/{name}"
-            response = client.get(url)
-            response.raise_for_status()
-            (target / name).write_text(response.text, encoding="utf-8")
+    to_download: List[str] = []
+
+    for name in PROMPT_NAMES:
+        source = resolve_local(name)
+        installed = target / name
+        if source is None:
+            if force or not installed.exists():
+                to_download.append(name)
+            continue
+        content = source.read_text(encoding="utf-8")
+        if force or not installed.exists() or installed.read_text(encoding="utf-8") != content:
+            installed.write_text(content, encoding="utf-8")
             written += 1
-            logger.info("  fetched %s (%d chars)", name, len(response.text))
+            origin = "custom" if source.parent == CUSTOM_DIR else "vendored"
+            logger.info("  installed %s (%s, %d chars)", name, origin, len(content))
+
+    if to_download:
+        import httpx
+
+        logger.info("Downloading %d prompt files missing locally", len(to_download))
+        with httpx.Client(timeout=30.0, follow_redirects=True) as client:
+            for name in to_download:
+                response = client.get(f"{RAW_BASE_URL}/{name}")
+                response.raise_for_status()
+                (target / name).write_text(response.text, encoding="utf-8")
+                written += 1
+                logger.info("  fetched %s (%d chars)", name, len(response.text))
+
+    if written:
+        logger.info("Installed %d SkillOpt prompt files into %s", written, target)
+    else:
+        logger.debug("SkillOpt prompts already up to date in %s", target)
     return written
 
 
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(message)s")
-    parser = argparse.ArgumentParser(description="Install SkillOpt reflection prompts into site-packages")
-    parser.add_argument("--force", action="store_true", help="Re-download even if files exist")
+    parser = argparse.ArgumentParser(description="Sync SkillOpt reflection prompts into site-packages")
+    parser.add_argument("--force", action="store_true", help="Rewrite all files even if content matches")
     args = parser.parse_args()
     written = ensure_prompts(force=args.force)
     print(f"Done: {written} file(s) written to {prompts_dir()}")

@@ -49,7 +49,9 @@ reached the 0.8 quality bar.
 | --- | --- |
 | `train.py` | Entry point: loads `.env`, installs missing SkillOpt prompt files, registers the adapter, delegates to `scripts.train` (SkillOpt CLI). |
 | `eval.py` | Eval-only entry point: run any skill file on any split via `scripts.eval_only`. |
-| `install_prompts.py` | Backfills `skillopt/prompts/*.md` reflection prompts missing from the skillopt 0.2.0 wheel (pinned upstream commit). |
+| `install_prompts.py` | Syncs reflection prompts into the skillopt package (0.2.0 wheel ships without them): `custom_prompt/` overrides > `skillopt_prompts/` defaults > GitHub fallback. |
+| `skillopt_prompts/` | Vendored upstream reflection prompts (pinned commit) — the optimizer's own meta-prompts. |
+| `custom_prompt/` | Same-named files here override the vendored defaults; edit to tailor the optimizer's reflection to the task. |
 | `configs/video2frames/default.yaml` | Structured SkillOpt config (model, train, gradient, optimizer, evaluation, env sections). |
 | `video2frames_env/adapter.py` | `Video2FramesAdapter(EnvAdapter)` — wires dataloader and rollout together. |
 | `video2frames_env/dataloader.py` | `FrameDataLoader(SplitDataLoader)` over `data/splits/{train,val,test}`. |
