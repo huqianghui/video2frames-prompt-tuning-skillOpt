@@ -83,13 +83,13 @@ def test_eval_batch_respects_env_num(loader: FrameDataLoader) -> None:
 
 
 def test_real_splits_when_present() -> None:
-    """Sanity-check the actual prepared dataset when it exists (40/24/30)."""
-    from video2frames_env.tasks import SPLITS_DIR
+    """Sanity-check the actual prepared dataset when it exists: sizes match the jsonl files."""
+    from video2frames_env.tasks import DATA_DIR, SPLITS_DIR
 
     if not (SPLITS_DIR / "train" / "items.json").exists():
         pytest.skip("data/splits not prepared")
     loader = FrameDataLoader()
     loader.setup({})
-    assert len(loader.train_items) == 40
-    assert len(loader.val_items) == 24
-    assert len(loader.test_items) == 30
+    for split, items in (("train", loader.train_items), ("val", loader.val_items), ("test", loader.test_items)):
+        lines = [l for l in (DATA_DIR / f"{split}.jsonl").read_text(encoding="utf-8").splitlines() if l]
+        assert len(items) == len(lines) > 0

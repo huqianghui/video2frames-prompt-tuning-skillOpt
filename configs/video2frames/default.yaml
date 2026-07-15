@@ -34,7 +34,7 @@ optimizer:
 evaluation:
   use_gate: true
   gate_metric: soft
-  sel_env_num: 24
+  sel_env_num: 100
   test_env_num: 30
   eval_test: true
 
