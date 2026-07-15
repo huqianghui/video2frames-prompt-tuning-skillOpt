@@ -90,8 +90,8 @@ selection):
 | Role | What it does | YAML key |
 | --- | --- | --- |
 | target | The tuned model that runs the rollouts (receives the skill + frames). Fixed to the customer's production deployment `gpt-4.1-mini`. | `model.target` |
-| optimizer | SkillOpt's analyst/reflection model that reads trajectories and proposes skill edits. Use a strong recent model. | `model.optimizer` |
-| judge | The LLM that grades generated descriptions (`evaluator.py`). Use a strong recent model. | `env.judge_model` |
+| optimizer | SkillOpt's analyst/reflection model: reads trajectories, does the credit assignment, proposes skill edits. Hardest reasoning in the loop, few calls per step — use the strongest model available. | `model.optimizer` |
+| judge | The LLM that grades generated descriptions (`evaluator.py`). Constrained rubric task, called per rollout (high volume) — consistency beats capability, and it must stay **fixed** across runs you compare (changing the judge changes the score scale). | `env.judge_model` |
 
 How each value reaches the code: skillopt's trainer/eval apply
 `model.target`/`model.optimizer` from the YAML unconditionally
@@ -104,9 +104,31 @@ env.judge_model=gpt-5.6`.
 The standalone `probe_content_filter.py` does not go through the YAML config;
 it takes `--model` (default `gpt-4.1-mini`).
 
-Note: changing `model.target` away from the deployment used for recorded
-baselines breaks score comparability — judge and optimizer can be upgraded
-freely, the target should not be.
+### Choosing model strength per role
+
+The optimizer is *not* "just an editor" — per step it reads minibatches of
+full trajectories (model output + per-dimension scores + hidden reference)
+and performs cross-trajectory credit assignment: diagnose the common root
+cause, decide which part of the skill to change without breaking the rest.
+Patch quality bounds how much a run can improve. The judge, by contrast,
+grades one output against ground truth with a fixed rubric at
+`temperature=0` — a much more constrained task.
+
+| Role | Cognitive load | Calls per step | Upgrade cost | Recommendation |
+| --- | --- | --- | --- | --- |
+| optimizer | highest (credit assignment) | a few analyst + merge calls | cheap | strongest model available |
+| judge | constrained rubric grading | once per rollout + gate evals (high volume) | expensive | mid-strong is fine; **never change it between runs you compare** |
+| target | n/a (it is the system under test) | once per rollout | — | fixed by the customer |
+
+Two comparability rules: (1) changing `model.target` away from the deployment
+used for recorded baselines breaks score comparability; (2) the judge defines
+the score scale, so all runs you compare must use the identical
+`env.judge_model`.
+
+Related knob: `env.hard_threshold` (default 0.8) is the static failure/success
+cut line for the reward — see
+[doc/reward-design.md §3](doc/reward-design.md) for how it steers the
+analysts; it is never adjusted automatically.
 
 ## Data preparation
 

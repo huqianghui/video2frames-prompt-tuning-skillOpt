@@ -66,7 +66,55 @@ from both optimizers are directly comparable.
    them 0 (and excluding those videos at sampling time via the probe cache)
    keeps them from polluting comparisons.
 
-## 3. What only the customer can answer
+## 3. How the reward drives optimization (the RL analogy)
+
+SkillOpt's training loop is reinforcement learning transplanted into text
+space. The reward defined above is consumed at these points:
+
+| RL concept | SkillOpt equivalent |
+| --- | --- |
+| policy | the skill text (the prompt) itself |
+| reward | `soft` (continuous) + `hard` (success signal) |
+| gradient | the analysts' written critiques + patches ("textual gradients") |
+| step size | `gradient.edit_budget` (max edits per patch), `optimizer.learning_rate` |
+| trust region / conservative update | the validation gate — an edited skill must score ≥ current on `valid_seen` or the edit is rejected and rolled back |
+| replay / avoiding repeated bad actions | the step buffer — rejected edits are summarized and shown to later analysts |
+
+The loop learns from **both** positive and negative examples. Each step,
+`hard` splits the rollout batch into two buckets
+(`skillopt/gradient/reflect.py`):
+
+- **failures** (`hard == 0`) → the *error analyst*: cross-trajectory root-cause
+  analysis, proposes corrective patches;
+- **successes** (`hard == 1`) → the *success analyst*: extracts behavior
+  patterns common across multiple successful trajectories and not yet covered
+  by the skill, so effective behavior gets reinforced rather than lost.
+
+Both analysts run when `gradient.failure_only: false` (this project's
+default). The key difference from numeric RL: credit assignment is not
+estimated from many samples — the optimizer LLM reads the trajectories and
+writes the update direction directly. One batch yields a structured edit; the
+cost is that update quality depends entirely on the optimizer model's
+judgment.
+
+Two practical consequences:
+
+1. **`env.hard_threshold` is a static config knob** (default 0.8), not
+   adaptive — it is the failure/success cut line, so it controls how
+   aggressively tasks are mined as failures. Tune it manually after
+   inspecting the `soft` distribution; SkillOpt never adjusts it. (SkillOpt
+   itself allows a continuous `hard` 0.0–1.0, "smoothed reward"; this env
+   emits the binary form.)
+2. **Spend model capability where the leverage is.** The optimizer performs
+   the hardest reasoning in the loop (multi-trajectory credit assignment) and
+   is called only a few times per step — upgrading it is cheap and
+   high-leverage; use the strongest model available. The judge is a
+   constrained rubric-grading task called once per rollout (high volume);
+   consistency matters more than raw capability — and it must stay **fixed**
+   across any runs you compare, because changing the judge changes the score
+   scale.
+
+## 4. What only the customer can answer
 
 These are assumptions baked into the score. Getting them wrong means the
 optimizer optimizes a precisely wrong target, so confirm them **before** the
@@ -84,7 +132,7 @@ large run:
 Questions 1–4 should be settled before spending on a full run; 5–6 are cheap to
 check in parallel.
 
-## 4. Suggested next steps
+## 5. Suggested next steps
 
 1. **Send the customer a short brief** (this document works): the score
    formula, the six questions above, plus 2–3 concrete scored examples from an
